@@ -1,0 +1,2 @@
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"]]}
+{"op": "set", "key": "c", "value": "3"}

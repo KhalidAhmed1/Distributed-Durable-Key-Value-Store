@@ -1,0 +1,2 @@
+{"op": "set", "key": "key", "value": "value"}
+{"op": "delete", "key": "key"}

@@ -1,0 +1,8 @@
+# pytest
+.pytest_cache/
+pytest-cache-files-*/
+.pytest-tmp/
+
+# python
+__pycache__/
+*.pyc
