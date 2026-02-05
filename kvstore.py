@@ -4,227 +4,197 @@ import os
 import random
 import re
 import threading
-from typing import Dict, List, Tuple, Optional, TextIO, List as TList, Tuple as TTuple
-
+from typing import Dict, List, Tuple, Optional, TextIO, List as TList
 
 class PersistentKVStore:
     """
-    A simple in-memory key-value store with durable persistence using
-    an append-only log file.
-
-    Operations:
-    - set(key, value)
-    - get(key)
-    - delete(key)
-    - bulk_set([(key, value), ...])
+    A Key-Value store with advanced features:
+    
+    Features:
+    - Persistence via append-only log (ensures data survives process restarts)
+    - Inverted Index for full-text search
+    - Word embedding for semantic similarity searches
+    - Durability via fsync to ensure data is flushed to disk
     """
 
     def __init__(self, data_file: str = "data.log") -> None:
         self._data_file = data_file
-        self._lock = threading.Lock()
-        self._store: Dict[str, str] = {}
-        self._log_fp: Optional[TextIO] = None
-        # Indexes on values
-        # 1) full-text inverted index: token -> set(keys)
-        self._inverted_index: Dict[str, set[str]] = {}
-        # 2) simple hashed embedding index: key -> vector
-        self._embedding_index: Dict[str, TList[float]] = {}
-        self._embedding_dim: int = 16
+        self._lock = threading.Lock()            # Lock for thread-safe operations
+        self._store: Dict[str, str] = {}         # In-memory key-value store
+        self._log_fp: Optional[TextIO] = None    # File pointer to the append-only log
+
+        # Indexes for search
+        self._inverted_index: Dict[str, set] = {}     # Maps token -> set of keys
+        self._embedding_index: Dict[str, TList[float]] = {}  # Maps key -> embedding vector
+        self._embedding_dim: int = 16                 # Dimension of embedding vectors
+
         # Ensure directory exists
         data_dir = os.path.dirname(os.path.abspath(self._data_file))
         if data_dir and not os.path.exists(data_dir):
             os.makedirs(data_dir, exist_ok=True)
-        # Load existing data if any
-        self._load_from_log()
-        # Open a persistent append handle to reduce per-write overhead
-        self._open_log_for_append()
 
-    # Public API -----------------------------------------------------
+        # Load existing data from log
+        self._load_from_log()
+
+    # ------------------- Public API -------------------
+
     def set(self, key: str, value: str, debug_unreliable: bool = False) -> None:
+        """Set a key-value pair in a thread-safe way."""
         with self._lock:
-            entry = {"op": "set", "key": key, "value": value}
-            self._apply_entry(entry)
-            self._append_log(entry, debug_unreliable=debug_unreliable)
+            self._set_internal(key, value, debug_unreliable)
 
     def get(self, key: str) -> Optional[str]:
+        """Retrieve a value for a key. Returns None if key does not exist."""
         with self._lock:
             return self._store.get(key)
 
     def delete(self, key: str) -> bool:
+        """Delete a key from the store. Returns True if key existed."""
         with self._lock:
-            existed = key in self._store
-            entry = {"op": "delete", "key": key}
-            self._apply_entry(entry)
-            self._append_log(entry)
-            return existed
+            if key not in self._store:
+                return False
+            self._append_log({"op": "delete", "key": key})
+            val = self._store.pop(key)
+            self._update_indexes(key, val, remove=True)
+            return True
 
-    def bulk_set(self, items: List[Tuple[str, str]], debug_unreliable: bool = False) -> None:
-        if not items:
-            return
-        with self._lock:
-            entry = {
-                "op": "bulk_set",
-                "items": list(items),
-            }
-            self._apply_entry(entry)
-            self._append_log(entry, debug_unreliable=debug_unreliable)
-
-    # Index query APIs -----------------------------------------------
-    def search_full_text(self, query: str) -> TList[str]:
+    def bulk_set(self, items: List[Tuple[str, str]]) -> None:
         """
-        Full text search over values using the inverted index.
-        Returns a list of keys that contain any of the query tokens.
+        Set multiple key-value pairs atomically.
+        The entire batch is first logged to ensure atomicity.
         """
         with self._lock:
-            tokens = self._tokenize(query)
-            results: set[str] = set()
-            for tok in tokens:
-                results.update(self._inverted_index.get(tok, ()))
-            return list(results)
+            self._append_log({"op": "bulk_set", "items": items})
+            for key, value in items:
+                self._set_internal(key, value, fast=True)
 
-    def search_embedding(self, query: str, top_k: int = 5) -> TList[TTuple[str, float]]:
-        """
-        Simple embedding-based search using a hashed bag-of-words embedding.
-        Returns up to top_k (key, similarity) pairs sorted by similarity desc.
-        """
+    # ------------------- Search API -------------------
+
+    def search_full_text(self, query: str) -> List[str]:
+        """Search keys using the inverted index (full-text search)."""
+        tokens = self._tokenize(query)
+        if not tokens:
+            return []
         with self._lock:
-            if not self._embedding_index:
-                return []
-            q_vec = self._build_embedding(query)
+            sets = [self._inverted_index.get(t, set()) for t in tokens]
+            # Intersection of sets to match all tokens
+            result_keys = set.intersection(*sets) if sets else set()
+            return list(result_keys)
 
-            def dot(a: TList[float], b: TList[float]) -> float:
-                return sum(x * y for x, y in zip(a, b))
-
-            def norm(a: TList[float]) -> float:
-                return math.sqrt(sum(x * x for x in a))
-
-            q_norm = norm(q_vec)
-            if q_norm == 0.0:
-                return []
-
-            scores: TList[TTuple[str, float]] = []
-            for key, vec in self._embedding_index.items():
-                v_norm = norm(vec)
-                if v_norm == 0.0:
-                    continue
-                sim = dot(q_vec, vec) / (q_norm * v_norm)
-                scores.append((key, sim))
-
-            scores.sort(key=lambda kv: kv[1], reverse=True)
-            return scores[:top_k]
-
-    def close(self) -> None:
+    def search_embedding(self, query: str, top_k: int = 5) -> List[Tuple[str, float]]:
+        """
+        Semantic search using word embeddings.
+        Returns top_k keys sorted by cosine similarity.
+        """
+        query_vec = self._build_embedding(query)
+        results = []
         with self._lock:
-            if self._log_fp is not None:
-                try:
-                    self._log_fp.flush()
-                    os.fsync(self._log_fp.fileno())
-                except OSError:
-                    pass
-                try:
-                    self._log_fp.close()
-                except OSError:
-                    pass
-                self._log_fp = None
+            for key, doc_vec in self._embedding_index.items():
+                sim = self._cosine_similarity(query_vec, doc_vec)
+                results.append((key, sim))
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
 
-    # Internal helpers ----------------------------------------------
-    def _load_from_log(self) -> None:
-        if not os.path.exists(self._data_file):
-            return
-        try:
-            with open(self._data_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        self._apply_entry(entry)
-                    except json.JSONDecodeError:
-                        # Skip corrupted lines
-                        continue
-        except OSError:
-            # If file can't be read, start with empty store
-            self._store = {}
+    # ------------------- Internal Helpers -------------------
 
-    def _apply_entry(self, entry: dict) -> None:
-        op = entry.get("op")
-        if op == "set":
-            key = entry["key"]
-            value = entry["value"]
-            old = self._store.get(key)
-            if old is not None:
-                self._remove_from_indexes(key, old)
-            self._store[key] = value
-            self._add_to_indexes(key, value)
-        elif op == "delete":
-            key = entry.get("key")
-            if key is not None:
-                old = self._store.pop(key, None)
-                if old is not None:
-                    self._remove_from_indexes(key, old)
-        elif op == "bulk_set":
-            for key, value in entry.get("items", []):
-                old = self._store.get(key)
-                if old is not None:
-                    self._remove_from_indexes(key, old)
-                self._store[key] = value
-                self._add_to_indexes(key, value)
+    def _set_internal(self, key: str, value: str, debug_unreliable: bool = False, fast: bool = False) -> None:
+        """
+        Core internal method to set a key.
+        - fast=True: skip logging (used when replaying log)
+        """
+        if not fast:
+            self._append_log({"op": "set", "key": key, "value": value}, debug_unreliable)
 
-    def _tokenize(self, text: str) -> TList[str]:
-        tokens = re.findall(r"\w+", str(text).lower())
-        return tokens
+        # Update indexes if key already exists
+        old_val = self._store.get(key)
+        if old_val:
+            self._update_indexes(key, old_val, remove=True)
 
-    def _add_to_indexes(self, key: str, value: str) -> None:
+        self._store[key] = value
+        self._update_indexes(key, value)
+
+    def _update_indexes(self, key: str, value: str, remove: bool = False) -> None:
+        """Update both inverted and embedding indexes."""
         tokens = self._tokenize(value)
         for tok in tokens:
-            bucket = self._inverted_index.setdefault(tok, set())
-            bucket.add(key)
-        self._embedding_index[key] = self._build_embedding(value)
+            if remove:
+                if tok in self._inverted_index:
+                    self._inverted_index[tok].discard(key)
+            else:
+                if tok not in self._inverted_index:
+                    self._inverted_index[tok] = set()
+                self._inverted_index[tok].add(key)
 
-    def _remove_from_indexes(self, key: str, value: str) -> None:
-        tokens = self._tokenize(value)
-        for tok in tokens:
-            bucket = self._inverted_index.get(tok)
-            if not bucket:
-                continue
-            bucket.discard(key)
-            if not bucket:
-                self._inverted_index.pop(tok, None)
-        self._embedding_index.pop(key, None)
+        if remove:
+            self._embedding_index.pop(key, None)
+        else:
+            self._embedding_index[key] = self._build_embedding(value)
 
-    def _build_embedding(self, text: str) -> TList[float]:
-        vec: TList[float] = [0.0] * self._embedding_dim
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple word tokenizer using regex."""
+        return re.findall(r'\w+', text.lower())
+
+    def _build_embedding(self, text: str) -> List[float]:
+        """
+        Build a simple word embedding vector.
+        Each token contributes to a deterministic position based on hash.
+        """
+        vec = [0.0] * self._embedding_dim
         for tok in self._tokenize(text):
             idx = hash(tok) % self._embedding_dim
             vec[idx] += 1.0
         return vec
 
-    def _open_log_for_append(self) -> None:
-        try:
-            self._log_fp = open(self._data_file, "a", encoding="utf-8")
-        except OSError:
-            self._log_fp = None
+    def _cosine_similarity(self, v1: List[float], v2: List[float]) -> float:
+        """Compute cosine similarity between two vectors."""
+        dot = sum(a * b for a, b in zip(v1, v2))
+        mag1 = math.sqrt(sum(a * a for a in v1))
+        mag2 = math.sqrt(sum(b * b for b in v2))
+        return dot / (mag1 * mag2) if mag1 > 0 and mag2 > 0 else 0.0
+
+    # ------------------- Persistence & Durability -------------------
 
     def _append_log(self, entry: dict, debug_unreliable: bool = False) -> None:
-        # Durability policy: only acknowledge after data is fsync'd.
-        try:
-            # Debug-only path: optionally simulate filesystem sync/write issues
-            # by randomly skipping the write entirely.
-            if debug_unreliable:
-                # 1% chance of "losing" this write
-                if random.random() < 0.01:
-                    return
+        """
+        Append a log entry to the persistent file.
+        Ensures data durability with flush + fsync.
+        """
+        if debug_unreliable and random.random() < 0.01:
+            return  # Simulate rare write failure (debugging purpose)
 
-            if self._log_fp is None:
-                self._open_log_for_append()
-            if self._log_fp is None:
-                return
-            self._log_fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            self._log_fp.flush()
-            os.fsync(self._log_fp.fileno())
-        except OSError:
-            # In a real system, we would want to surface this. For this
-            # exercise, we silently ignore persistence failures.
-            pass
+        if self._log_fp is None:
+            self._log_fp = open(self._data_file, "a", encoding="utf-8")
 
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        self._log_fp.write(line)
+
+        # Flush and fsync for 100% durability even if process is killed
+        self._log_fp.flush()
+        os.fsync(self._log_fp.fileno())
+
+    def _load_from_log(self) -> None:
+        """Replay the log file to reconstruct in-memory store and indexes."""
+        if not os.path.exists(self._data_file):
+            return
+        with open(self._data_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                op = entry.get("op")
+                if op == "set":
+                    self._set_internal(entry["key"], entry["value"], fast=True)
+                elif op == "delete":
+                    k = entry["key"]
+                    val = self._store.pop(k, None)
+                    if val:
+                        self._update_indexes(k, val, remove=True)
+                elif op == "bulk_set":
+                    for k, v in entry["items"]:
+                        self._set_internal(k, v, fast=True)
+
+    def close(self) -> None:
+        """Close the log file if open."""
+        if self._log_fp:
+            self._log_fp.close()
+            self._log_fp = None
