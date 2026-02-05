@@ -107,9 +107,3 @@ results = store.search_full_text("query_word")
 matches = store.search_embedding("related text")
 
 ```
-
-## 🛠 Implementation Details
-
-* **Durability**: Every write operation is serialized to JSON and appended to a log file. During startup, the log is replayed to rebuild the state.
-* **Master-less Cluster**: Nodes use a deterministic coordinator selection. If the primary node is marked "down," the next available node in the sequence automatically takes over.
-* **Unreliable Disk Simulation**: Includes a `debug_unreliable` flag (1% failure rate) to test system resilience against filesystem synchronization issues.
