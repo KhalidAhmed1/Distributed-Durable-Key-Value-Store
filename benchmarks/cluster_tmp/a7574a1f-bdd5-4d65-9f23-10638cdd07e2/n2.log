@@ -1,0 +1,37 @@
+{"op": "set", "key": "k", "value": "v"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"]]}
+{"op": "set", "key": "c", "value": "3"}
+{"op": "set", "key": "k", "value": "v"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"]]}
+{"op": "set", "key": "c", "value": "3"}
+{"op": "set", "key": "k", "value": "v"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"]]}
+{"op": "set", "key": "c", "value": "3"}
+{"op": "set", "key": "k", "value": "v"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"]]}
+{"op": "set", "key": "c", "value": "3"}
+{"op": "set", "key": "key1", "value": "value1"}
+{"op": "set", "key": "k1", "value": "v1"}
+{"op": "set", "key": "k2", "value": "v2"}
+{"op": "set", "key": "k", "value": "v"}
+{"op": "set", "key": "before", "value": "failure"}
+{"op": "set", "key": "during", "value": "downtime"}
+{"op": "set", "key": "after", "value": "recovery"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"], ["c", "3"]]}
+{"op": "bulk_set", "items": [["d", "4"], ["e", "5"]]}
+{"op": "set", "key": "k1", "value": "v1"}
+{"op": "set", "key": "k3", "value": "v3"}
+{"op": "set", "key": "k", "value": "v"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"]]}
+{"op": "set", "key": "c", "value": "3"}
+{"op": "set", "key": "key1", "value": "value1"}
+{"op": "set", "key": "k1", "value": "v1"}
+{"op": "set", "key": "k2", "value": "v2"}
+{"op": "set", "key": "k", "value": "v"}
+{"op": "set", "key": "before", "value": "failure"}
+{"op": "set", "key": "during", "value": "downtime"}
+{"op": "set", "key": "after", "value": "recovery"}
+{"op": "bulk_set", "items": [["a", "1"], ["b", "2"], ["c", "3"]]}
+{"op": "bulk_set", "items": [["d", "4"], ["e", "5"]]}
+{"op": "set", "key": "k1", "value": "v1"}
+{"op": "set", "key": "k3", "value": "v3"}

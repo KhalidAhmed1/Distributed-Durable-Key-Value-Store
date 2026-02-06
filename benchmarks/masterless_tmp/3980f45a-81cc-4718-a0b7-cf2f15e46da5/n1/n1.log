@@ -1,0 +1,3 @@
+{"op": "set", "key": "before", "value": "failure"}
+{"op": "set", "key": "during", "value": "downtime"}
+{"op": "set", "key": "after", "value": "recovery"}
